@@ -71,49 +71,6 @@ def main():
                 
                 visualize_test_samples(model_a, data_module)
                 visualize_filters(model_a)
-    
-    if args.part in ['b', 'both']:
-        print("Running Part B: Fine-tuning Pre-trained Model")
-        
-        # Train and compare different fine-tuning strategies
-        if args.train:
-            print("Training and comparing fine-tuning strategies...")
-            results = compare_finetuning_strategies()
-            
-            # Log comparison results
-            wandb.init(project="inaturalist_finetune_comparison")
-            
-            # Create a table for the results
-            table = wandb.Table(columns=["Model", "Strategy", "Test Accuracy"])
-            
-            for result in results:
-                table.add_data(
-                    result['config']['model_name'],
-                    result['config']['fine_tuning_strategy'],
-                    result['test_acc']
-                )
-            
-            wandb.log({"finetuning_comparison": table})
-            
-            # Find best model
-            best_result = max(results, key=lambda x: x['test_acc'])
-            print(f"Best fine-tuning result: {best_result}")
-            
-            # Test and visualize best model
-            if args.test:
-                # Train the best model again
-                best_model, _ = train_finetune_model(best_result['config'])
-                
-                # Setup data module
-                data_module = iNaturalistDataModule(
-                    data_dir=args.data_dir,
-                    batch_size=best_result['config']['batch_size'],
-                    augmentation=True
-                )
-                data_module.setup()
-                
-                # Visualize test samples
-                visualize_test_samples(best_model, data_module)
 
 if __name__ == "__main__":
     main()
