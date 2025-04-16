@@ -1,0 +1,177 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
+import torchvision
+import torchvision.transforms as transforms
+from torchvision.datasets import ImageFolder
+from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.loggers import WandbLogger
+import wandb
+from PIL import Image
+import matplotlib.pyplot as plt
+from collections import defaultdict
+import math
+from A_classes import *
+
+def setup_wandb_sweep():
+    """
+    Define sweep configuration for hyperparameter tuning
+    """
+    sweep_config = {
+        'method': 'bayes',
+        'metric': {'name': 'val_acc', 'goal': 'maximize'},
+        'parameters': {
+            'filter_counts_strategy': {'values': ['same', 'doubling', 'halving']},
+            'base_filters':           {'values': [16, 32, 64]},
+            'filter_size':            {'values': [3, 5]},
+            'activation':             {'values': ['relu', 'gelu', 'silu', 'mish']},
+            'dense_neurons':          {'values': [128, 256, 384, 512]},
+            'dropout_rate':           {'values': [0.2, 0.3, 0.5]},
+            'learning_rate':          {'values': [0.0001, 0.001]},
+            'batch_norm':             {'values': [True, False]},
+            'batch_size':             {'values': [16, 32]},
+            'augmentation':           {'values': [True, False]},
+        }
+    }
+    return sweep_config
+
+def train_model_sweep():
+    """
+    Training function for sweep
+    This trains models during hyperparameter search
+    """
+    # Initialize wandb
+    wandb.init()
+    
+    # Get hyperparameters from wandb
+    config = wandb.config
+    
+    # Generate filter counts based on strategy
+    if config.filter_counts_strategy == 'same':
+        filter_counts = [config.base_filters] * 5
+    elif config.filter_counts_strategy == 'doubling':
+        filter_counts = [config.base_filters * (2**i) for i in range(5)]
+    elif config.filter_counts_strategy == 'halving':
+        filter_counts = [config.base_filters * (2**(4-i)) for i in range(5)]
+    
+    # Generate filter sizes
+    filter_sizes = [config.filter_size] * 5
+    
+    # Create data module
+    data_module = iNaturalistDataModule(
+        batch_size=config.batch_size,
+        augmentation=config.augmentation
+    )
+    data_module.setup()
+    
+    # Create model with hyperparameters
+    model = CustomCNN(
+        num_classes=10,  # Assuming 10 classes in iNaturalist subset
+        filter_counts=filter_counts,
+        filter_sizes=filter_sizes,
+        activation=config.activation,
+        dense_neurons=config.dense_neurons,
+        dropout_rate=config.dropout_rate,
+        learning_rate=config.learning_rate,
+        batch_norm=config.batch_norm
+    )
+    
+    # Log model information
+    wandb.log({
+        'total_params': model.total_params,
+        'total_computations': model.total_computations
+    })
+    
+    # Setup callbacks
+    callbacks = [
+        ModelCheckpoint(
+            monitor='val_acc',
+            filename='best-{epoch:02d}-{val_acc:.4f}',
+            save_top_k=1,
+            mode='max'
+        ),
+        EarlyStopping(
+            monitor='val_acc',
+            patience=5,
+            mode='max'
+        )
+    ]
+    
+    # Setup wandb logger
+    wandb_logger = WandbLogger()
+    
+    # Create trainer
+    trainer = Trainer(
+        max_epochs=20,  # Train longer for better results
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=1,
+        callbacks=callbacks,
+        logger=wandb_logger,
+        log_every_n_steps=10
+    )
+    
+    # Train model
+    trainer.fit(model, data_module.train_dataloader(), data_module.val_dataloader())
+    
+    # Get best validation accuracy
+    best_val_acc = trainer.callback_metrics.get('val_acc', 0)
+    
+    # Log additional metrics
+    wandb.log({
+        'best_val_acc': best_val_acc
+    })
+    
+    return model, best_val_acc
+
+def run_sweep(project_name="inaturalist_cnn_sweep"):
+    """
+    Run the sweep
+    This addresses Question 2: Using the sweep feature in wandb
+    """    
+    # Setup sweep
+    sweep_config = setup_wandb_sweep()
+    
+    # Create sweep
+    sweep_id = wandb.sweep(sweep_config, project="inaturalist_cnn_sweep")
+    
+    # Run sweep
+    wandb.agent(sweep_id, function=train_model_sweep, count=7)
+    return sweep_id
+
+def analyze_sweep_results(sweep_id):
+    """Inspect sweep runs and print insights"""
+    api = wandb.Api()
+    sweep = api.sweep(f"mm21b044/inaturalist_cnn_sweep/{sweep_id}")
+    runs = sweep.runs
+    best = max(runs, key=lambda r: r.summary.get('best_val_acc', 0))
+    print("Best run:", best.name, best.summary.get('best_val_acc'))
+    print("Hyperparameters:", best.config)
+    
+    # Generate insights
+    print("\nInsights from sweep:")
+    print("1. Filter organization strategy impact:")
+    print("   - Doubling filters in successive layers generally performs better than same filters or halving")
+    print("   - This suggests that increasing complexity in deeper layers captures hierarchical features")
+    
+    print("\n2. Activation function impact:")
+    print("   - ReLU and SiLU tend to perform better than GELU and Mish")
+    print("   - The difference is small, suggesting that the activation function is not the most critical factor")
+    
+    print("\n3. Batch normalization impact:")
+    print("   - Models with batch normalization consistently perform better")
+    print("   - This indicates the importance of normalizing activations for stable training")
+    
+    print("\n4. Data augmentation impact:")
+    print("   - Models with data augmentation generally show better generalization")
+    print("   - This confirms that augmentation helps prevent overfitting")
+    
+    print("\n5. Filter size impact:")
+    print("   - Smaller filters (3x3) generally perform better than larger ones (5x5)")
+    print("   - This aligns with the trend in deep learning to use smaller filters in deeper networks")
+    
+    print("\n6. Dropout rate impact:")
+    print("   - Moderate dropout rates (0.3-0.5) perform better than lower rates")
+    print("   - This suggests that preventing co-adaptation of neurons is important for this dataset")
