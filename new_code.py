@@ -6,15 +6,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
-import torchvision
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from PIL import Image
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import math
