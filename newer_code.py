@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, SubsetRandomSampler
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import LightningModule, LightningDataModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 import wandb
@@ -79,7 +79,6 @@ class CustomCNN(LightningModule):
         # Build the network
         self.conv_layers = nn.ModuleList()
         
-        
         # Calculate feature map sizes for computational analysis
         feature_size = input_size
         feature_sizes = [feature_size]
@@ -141,7 +140,9 @@ class CustomCNN(LightningModule):
         self.total_computations = self.calculate_total_computations()
         
         # For storing test predictions - needed for visualization
-        self.test_outputs = []
+        self.test_predictions = []
+        self.test_targets = []
+        self.test_images = []
         
     def forward(self, x):
         """Forward pass through the network"""
@@ -323,69 +324,67 @@ class CustomCNN(LightningModule):
         self.log('test_loss', loss, prog_bar=True)
         self.log('test_acc', acc, prog_bar=True)
         
-        # Store outputs for later visualization
-        output = {'loss': loss, 'preds': preds, 'targets': y, 'images': x}
-        self.test_outputs.append(output)
+        # Store images, predictions and targets for later visualization
+        # Use detach to prevent memory leaks
+        self.test_predictions.append(preds.detach().cpu())
+        self.test_targets.append(y.detach().cpu())
+        self.test_images.append(x.detach().cpu())
         
-        return output
+        return {'loss': loss, 'preds': preds, 'targets': y}
     
     def on_test_epoch_end(self):
-        """Gather predictions after test epoch"""
-        if not self.test_outputs:
+        """Process and visualize test results at the end of testing"""
+        if not self.test_predictions:
             return
-    
-        # Concatenate predictions and targets on CPU
-        all_preds = torch.cat([x['preds'].cpu() for x in self.test_outputs])
-        all_targets = torch.cat([x['targets'].cpu() for x in self.test_outputs])
-    
-        # Calculate confusion matrix
-        conf_matrix = torch.zeros(self.num_classes, self.num_classes)
-        for t, p in zip(all_targets, all_preds):
-            conf_matrix[t.long(), p.long()] += 1
-    
-        # Log confusion matrix with wandb
-        wandb.log({"confusion_matrix": wandb.plot.confusion_matrix(
-            preds=all_preds.numpy(),
-            y_true=all_targets.numpy(),
-            class_names=[str(i) for i in range(self.num_classes)]
-        )})
-    
-        # Visualize test images with predictions (10×3 grid)
-        all_images = torch.cat([x['images'].cpu() for x in self.test_outputs])
-        self.visualize_test_predictions(all_images[:30], all_preds[:30], all_targets[:30])
-    
-        # Optional: Visualize filters
+        
+        # Concatenate all predictions, targets, and images
+        all_preds = torch.cat(self.test_predictions)
+        all_targets = torch.cat(self.test_targets)
+        all_images = torch.cat(self.test_images)
+        
+        # Calculate accuracy
+        accuracy = (all_preds == all_targets).float().mean().item()
+        print(f"Test accuracy: {accuracy:.4f}")
+        
+        # Visualize test predictions in a 10×3 grid
+        self.visualize_test_predictions(all_images, all_preds, all_targets)
+        
+        # Visualize first layer filters
         self.visualize_first_layer_filters()
-    
-        # Optional: Perform guided backpropagation
+        
+        # Perform guided backpropagation on last convolutional layer
         if len(all_images) > 0:
-            with torch.set_grad_enabled(True):
-                self.visualize_guided_backprop(all_images[0])
-    
-        # Calculate overall test accuracy
-        test_acc = (all_preds == all_targets).float().mean()
-        print(f"Test Accuracy: {test_acc:.4f}")
-    
-        # Clear test outputs
-        self.test_outputs.clear()
-
+            # Take a single image for guided backprop
+            sample_image = all_images[0].unsqueeze(0).to(self.device)
+            self.visualize_guided_backprop(sample_image)
+        
+        # Clear stored test data to free memory
+        self.test_predictions = []
+        self.test_targets = []
+        self.test_images = []
     
     def visualize_test_predictions(self, images, predictions, targets):
         """
         Visualize test images with predictions in a 10×3 grid
         This addresses Question 4: Providing a 10×3 grid of test images and predictions
         """
-        fig, axes = plt.subplots(10, 3, figsize=(12, 30))
+        # Create figure with 10×3 grid
+        fig, axes = plt.subplots(10, 3, figsize=(15, 30))
         
         # Get class names if available
-        class_names = self.trainer.datamodule.test_dataset.classes if hasattr(self.trainer, 'datamodule') else None
+        class_names = None
+        if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'test_dataset'):
+            if hasattr(self.trainer.datamodule.test_dataset, 'classes'):
+                class_names = self.trainer.datamodule.test_dataset.classes
         
-        for i in range(min(30, len(images))):
-            row = i // 3
-            col = i % 3
+        # Use minimum of 30 samples or available samples
+        num_samples = min(30, len(images))
+        
+        for i in range(num_samples):
+            row, col = i // 3, i % 3
             
             # Get image
-            img = images[i].cpu().numpy().transpose(1, 2, 0)
+            img = images[i].numpy().transpose(1, 2, 0)
             
             # De-normalize image
             mean = np.array([0.485, 0.456, 0.406])
@@ -397,19 +396,21 @@ class CustomCNN(LightningModule):
             pred = predictions[i].item()
             target = targets[i].item()
             
+            # Use class names if available, otherwise use class indices
             pred_name = class_names[pred] if class_names else f"Class {pred}"
             target_name = class_names[target] if class_names else f"Class {target}"
             
             # Display image
             axes[row, col].imshow(img)
             
-            # Set title: green if correct, red if wrong
+            # Set title with color: green if correct, red if wrong
             color = 'green' if pred == target else 'red'
             axes[row, col].set_title(f"Pred: {pred_name}\nTrue: {target_name}", color=color)
             axes[row, col].axis('off')
         
         plt.tight_layout()
-        wandb.log({"test_predictions": wandb.Image(fig)})
+        plt.savefig('test_predictions_grid.png')
+        wandb.log({"test_predictions_grid": wandb.Image(fig)})
         plt.close(fig)
     
     def visualize_first_layer_filters(self):
@@ -417,97 +418,118 @@ class CustomCNN(LightningModule):
         Visualize filters in the first convolutional layer
         This addresses the optional part of Question 4
         """
-        # Get first layer filters
+        # Get weights of the first convolutional layer
         filters = self.conv_layers[0][0].weight.data.cpu()
         
-        # Number of filters in first layer
+        # Number of filters in the first layer
         num_filters = filters.shape[0]
         grid_size = int(np.ceil(np.sqrt(num_filters)))
         
-        # Create figure
+        # Create figure for the grid
         fig, axes = plt.subplots(grid_size, grid_size, figsize=(15, 15))
         
-        # Plot filters
+        # Plot each filter
         for i, ax in enumerate(axes.flat):
             if i < num_filters:
-                # Normalize filter for visualization
-                f = filters[i].permute(1, 2, 0).numpy()
+                # Get the filter
+                filter_weights = filters[i]
                 
-                # If it's a 3-channel filter (RGB)
-                if f.shape[2] == 3:
-                    # Normalize each channel
-                    f = (f - f.min()) / (f.max() - f.min() + 1e-8)
-                    ax.imshow(f)
-                else:
-                    # For single channel filters
-                    f = f[:, :, 0]
-                    f = (f - f.min()) / (f.max() - f.min() + 1e-8)
-                    ax.imshow(f, cmap='gray')
+                # Normalize for better visualization
+                # Convert to numpy and transpose to (H, W, C)
+                f_np = filter_weights.permute(1, 2, 0).numpy()
                 
+                # Normalize to [0, 1]
+                f_np = (f_np - f_np.min()) / (f_np.max() - f_np.min() + 1e-8)
+                
+                # Display the filter
+                ax.imshow(f_np)
                 ax.set_title(f"Filter {i+1}")
+            
+            # Turn off axis for all subplots
             ax.axis('off')
         
         plt.tight_layout()
+        plt.savefig('first_layer_filters.png')
         wandb.log({"first_layer_filters": wandb.Image(fig)})
         plt.close(fig)
     
-    def visualize_guided_backprop(self, input_image, layer_idx=4, neurons=10):
+    def visualize_guided_backprop(self, input_image):
         """
-        Apply guided back-propagation on neurons in the specified conv layer
+        Apply guided back-propagation on neurons in the last conv layer
         This addresses the optional part of Question 4
         
         Args:
             input_image: Single input image tensor [1, C, H, W]
-            layer_idx: Index of conv layer to visualize (0-4)
-            neurons: Number of neurons to visualize
         """
-        self.eval()
+        self.eval()  # Set model to evaluation mode
+        
+        # We'll visualize 10 neurons from the last conv layer (CONV5)
+        layer_idx = 4  # 5th layer (0-indexed)
+        num_neurons = 10
         
         # Create a copy of the image that requires gradient
-        input_tensor = input_image.clone().detach().unsqueeze(0).to(self.device)
-        input_tensor.requires_grad = True
+        image = input_image.clone()
+        image.requires_grad_(True)
         
-        # Forward pass to get activations
-        activations = []
-        x = input_tensor
+        # Forward pass through each layer until the target layer
+        activations = None
+        x = image
         
-        # Pass through layers up to the specified conv layer
+        # Store hooks for guided backprop
+        handles = []
+        
+        # Define hook for ReLU backward pass
+        def backward_hook_fn(module, grad_input, grad_output):
+            # In guided backprop, we only pass positive gradients to positive activations
+            if isinstance(module, (nn.ReLU, nn.GELU, nn.SiLU, nn.Mish)):
+                return (torch.clamp(grad_input[0], min=0.0),)
+        
+        # Register hooks for all activation functions
+        for layer in self.conv_layers:
+            for module in layer:
+                if isinstance(module, (nn.ReLU, nn.GELU, nn.SiLU, nn.Mish)):
+                    handle = module.register_backward_hook(backward_hook_fn)
+                    handles.append(handle)
+        
+        # Forward pass to the target layer
         for i, layer in enumerate(self.conv_layers):
-            if i <= layer_idx:
-                # For the target layer, we need the pre-activation output
-                if i == layer_idx:
-                    # Get conv output before activation
-                    for j, module in enumerate(layer):
-                        if j == 0:  # Conv2d module
-                            x = module(x)
-                            # Store activations
-                            activations = x.clone()
-                            break
-                else:
-                    x = layer(x)
+            if i < layer_idx:
+                x = layer(x)
+            elif i == layer_idx:
+                # For the target layer, we need to get activations before the activation function
+                for j, module in enumerate(layer):
+                    x = module(x)
+                    if isinstance(module, nn.Conv2d):
+                        # Store activations after conv but before activation
+                        activations = x.clone()
         
-        # Get sample neurons to visualize
+        # If no activations were captured, return
+        if activations is None:
+            print("Failed to capture activations")
+            return
+        
+        # Get the number of channels in the activations (number of filters in the conv layer)
         num_channels = activations.shape[1]
-        selected_neurons = list(range(min(neurons, num_channels)))
+        num_neurons = min(num_neurons, num_channels)
         
         # Create figure for guided backprop visualizations
-        fig, axes = plt.subplots(1, len(selected_neurons), figsize=(20, 4))
+        fig, axes = plt.subplots(1, num_neurons, figsize=(20, 4))
         
-        for i, neuron_idx in enumerate(selected_neurons):
+        for i in range(num_neurons):
             # Zero gradients
             self.zero_grad()
-            if input_tensor.grad is not None:
-                input_tensor.grad.zero_()
+            if image.grad is not None:
+                image.grad.zero_()
             
             # Create a gradient target that selects only the current neuron
             grad_target = torch.zeros_like(activations)
-            grad_target[0, neuron_idx] = torch.ones_like(activations[0, neuron_idx])
+            grad_target[0, i] = activations[0, i].sum()
             
             # Backward pass
             activations.backward(gradient=grad_target, retain_graph=True)
             
-            # Get gradients
-            gradients = input_tensor.grad.clone().detach().cpu().numpy()[0]
+            # Get gradients with respect to the input image
+            gradients = image.grad.clone().detach().cpu().numpy()[0]
             
             # Convert to RGB image
             gradients = np.transpose(gradients, (1, 2, 0))
@@ -517,20 +539,24 @@ class CustomCNN(LightningModule):
             gradients = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
             
             # Plot
-            if len(selected_neurons) == 1:
+            if num_neurons == 1:
                 axes.imshow(gradients)
-                axes.set_title(f"Neuron {neuron_idx}")
+                axes.set_title(f"Neuron {i}")
                 axes.axis('off')
             else:
                 axes[i].imshow(gradients)
-                axes[i].set_title(f"Neuron {neuron_idx}")
+                axes[i].set_title(f"Neuron {i}")
                 axes[i].axis('off')
         
         plt.tight_layout()
-        wandb.log({f"guided_backprop_layer{layer_idx}": wandb.Image(fig)})
+        plt.savefig('guided_backprop.png')
+        wandb.log({"guided_backprop": wandb.Image(fig)})
         plt.close(fig)
+        
+        # Remove hooks
+        for handle in handles:
+            handle.remove()
 
-from pytorch_lightning import LightningDataModule
 
 class iNaturalistDataModule(LightningDataModule):
     def __init__(self, data_dir='/kaggle/input/inaturalist/inaturalist_12K', batch_size=32, num_workers=4, 
@@ -627,359 +653,6 @@ class iNaturalistDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers
         )
-def visualize_test_samples(model, test_dataloader, num_samples=30):
-    """
-    Visualize test samples with their predictions
-    This addresses Question 4: Providing a 10×3 grid of test images and predictions
-    
-    Args:
-        model: Trained model
-        test_dataloader: DataLoader for test data
-        num_samples: Number of samples to visualize (default: 30 for 10×3 grid)
-    """
-    model.eval()
-    device = next(model.parameters()).device
-    
-    # Get class names
-    class_names = test_dataloader.dataset.classes if hasattr(test_dataloader.dataset, 'classes') else None
-    
-    # Get samples
-    all_images = []
-    all_labels = []
-    all_preds = []
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            images, labels = batch
-            images = images.to(device)
-            labels = labels.to(device)
-            
-            # Get predictions
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
-            
-            # Add to lists
-            all_images.extend(images.cpu())
-            all_labels.extend(labels.cpu())
-            all_preds.extend(preds.cpu())
-            
-            if len(all_images) >= num_samples:
-                break
-    
-    # Create grid
-    fig, axes = plt.subplots(10, 3, figsize=(15, 30))
-    
-    for i in range(min(num_samples, len(all_images))):
-        row = i // 3
-        col = i % 3
-        
-        # Get image
-        img = all_images[i].numpy().transpose(1, 2, 0)
-        
-        # De-normalize image
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-        img = std * img + mean
-        img = np.clip(img, 0, 1)
-        
-        # Get predicted and target class names
-        pred = all_preds[i].item()
-        target = all_labels[i].item()
-        
-        pred_name = class_names[pred] if class_names else f"Class {pred}"
-        target_name = class_names[target] if class_names else f"Class {target}"
-        
-        # Display image
-        axes[row, col].imshow(img)
-        
-        # Set title: green if correct, red if wrong
-        color = 'green' if pred == target else 'red'
-        axes[row, col].set_title(f"Pred: {pred_name}\nTrue: {target_name}", color=color)
-        axes[row, col].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('test_predictions.png')
-    wandb.log({"test_predictions_grid": wandb.Image(fig)})
-    plt.close(fig)
-    
-    # Calculate accuracy
-    accuracy = sum([p == t for p, t in zip(all_preds, all_labels)]) / len(all_preds)
-    print(f"Test accuracy on {len(all_preds)} samples: {accuracy:.4f}")
-    
-    return accuracy
-
-def visualize_filters(model):
-    """
-    Visualize filters in the first layer of the model
-    This addresses the optional part of Question 4: Visualize filters
-    
-    Args:
-        model: Trained model
-    """
-    # Get first layer filters
-    first_conv = model.conv_layers[0][0]
-    filters = first_conv.weight.data.cpu()
-    
-    # Number of filters
-    num_filters = filters.shape[0]
-    
-    # Determine grid size
-    grid_size = int(math.ceil(math.sqrt(num_filters)))
-    
-    # Create figure
-    fig, axes = plt.subplots(grid_size, grid_size, figsize=(15, 15))
-    
-    # Plot filters
-    for i, ax in enumerate(axes.flat):
-        if i < num_filters:
-            # Get filter
-            f = filters[i]
-            
-            # Normalize filter for visualization
-            if f.ndim == 3:  # For RGB filters
-                # Convert to numpy and transpose to (H, W, C)
-                f_np = f.permute(1, 2, 0).numpy()
-                
-                # Normalize to [0, 1]
-                f_np = (f_np - f_np.min()) / (f_np.max() - f_np.min() + 1e-8)
-                
-                # Display
-                ax.imshow(f_np)
-            else:  # For grayscale filters
-                f_np = f.numpy()
-                ax.imshow(f_np, cmap='gray')
-            
-            ax.set_title(f"Filter {i+1}")
-        
-        ax.axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('first_layer_filters.png')
-    wandb.log({"first_layer_filters_grid": wandb.Image(fig)})
-    plt.close(fig)
-
-def train_final_model(config, data_module, save_path='best_model.pt'):
-    """
-    Train the final model with the best hyperparameters
-    
-    Args:
-        config: Configuration dictionary with hyperparameters
-        data_module: Data module with train, val, and test dataloaders
-        save_path: Path to save the model
-    
-    Returns:
-        Trained model
-    """
-    # Generate filter counts based on strategy
-    if config['filter_counts_strategy'] == 'same':
-        filter_counts = [config['base_filters']] * 5
-    elif config['filter_counts_strategy'] == 'doubling':
-        filter_counts = [config['base_filters'] * (2**i) for i in range(5)]
-    elif config['filter_counts_strategy'] == 'halving':
-        filter_counts = [config['base_filters'] * (2**(4-i)) for i in range(5)]
-    else:
-        # Default to doubling
-        filter_counts = [config['base_filters'] * (2**i) for i in range(5)]
-    
-    # Generate filter sizes
-    filter_sizes = [config['filter_size']] * 5
-    
-    # Create model with best hyperparameters
-    model = CustomCNN(
-        num_classes=10,  # For the iNaturalist subset
-        filter_counts=filter_counts,
-        filter_sizes=filter_sizes,
-        activation=config['activation'],
-        dense_neurons=config['dense_neurons'],
-        dropout_rate=config['dropout_rate'],
-        learning_rate=config['learning_rate'],
-        batch_norm=config['batch_norm']
-    )
-    
-    # Setup callbacks
-    callbacks = [
-        ModelCheckpoint(
-            monitor='val_acc',
-            filename='best-{epoch:02d}-{val_acc:.4f}',
-            save_top_k=1,
-            mode='max'
-        ),
-        EarlyStopping(
-            monitor='val_acc',
-            patience=5,
-            mode='max'
-        )
-    ]
-    
-    # Setup wandb logger
-    wandb_logger = WandbLogger(project="inaturalist_cnn_final_model")
-    
-    # Create trainer
-    trainer = Trainer(
-        max_epochs=15,
-        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        devices=1,
-        callbacks=callbacks,
-        logger=wandb_logger,
-        log_every_n_steps=10
-    )
-    
-    # Train model
-    trainer.fit(model, data_module)
-    
-    # Save model
-    torch.save(model.state_dict(), save_path)
-    
-    # Test model
-    trainer.test(model, data_module)
-    
-    # Calculate parameter and computation formulas
-    m = config['base_filters']  # Number of filters
-    k = config['filter_size']   # Filter size
-    n = config['dense_neurons'] # Dense neurons
-    
-    # Display the formulas for parameters and computations
-    print(f"\nFormula for total parameters with m={m}, k={k}, n={n}:")
-    params_formula = model.formula_parameter_count(m, k, n)
-    print(f"Total parameters = {params_formula}")
-    
-    print(f"\nFormula for total computations with m={m}, k={k}, n={n}:")
-    comp_formula = model.formula_computation_count(m, k, n)
-    print(f"Total computations = {comp_formula}")
-    
-    # Analytical expression for parameters
-    print("\nAnalytical expression for parameters:")
-    print("P = m(3k²+1) + 4m(mk²+1) + m(input_size/32)²n + n + n(num_classes) + num_classes")
-    
-    # Analytical expression for computations
-    print("\nAnalytical expression for computations:")
-    print("C = 3mk²(input_size)² + sum[i=1 to 4](m²k²(input_size/2^i)²) + m(input_size/32)²n + n(num_classes)")
-    
-    # Close wandb run
-    wandb.finish()
-
-    # Return model
-    return model
-
-def visualize_guided_backprop(model, test_dataloader, layer_idx=4, num_neurons=10):
-    """
-    Visualize guided backpropagation for neurons in the last conv layer
-    This addresses the optional part of Question 4: Guided backpropagation
-    
-    Args:
-        model: Trained model
-        test_dataloader: DataLoader for test data
-        layer_idx: Index of the conv layer to visualize (default: 4 for last conv layer)
-        num_neurons: Number of neurons to visualize (default: 10)
-    """
-    model.eval()
-    device = next(model.parameters()).device
-    
-    # Get a sample image
-    dataiter = iter(test_dataloader)
-    images, _ = next(dataiter)
-    image = images[0:1].to(device)
-    
-    # Register hooks for guided backpropagation
-    class GuidedBackpropReLU(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, input):
-            ctx.save_for_backward(input)
-            return input.clamp(min=0)
-        
-        @staticmethod
-        def backward(ctx, grad_output):
-            input, = ctx.saved_tensors
-            grad_input = grad_output.clone()
-            grad_input[input < 0] = 0
-            grad_input[grad_output < 0] = 0
-            return grad_input
-    
-    class GuidedBackpropModel(nn.Module):
-        def __init__(self, model, layer_idx):
-            super().__init__()
-            self.model = model
-            self.layer_idx = layer_idx
-            self.outputs = None
-            
-            # Extract all layers until target layer
-            layers = []
-            for i, layer in enumerate(model.conv_layers):
-                if i < layer_idx:
-                    # Replace ReLU with GuidedReLU
-                    modified_layer = []
-                    for module in layer:
-                        if isinstance(module, nn.ReLU):
-                            modified_layer.append(lambda x: GuidedBackpropReLU.apply(x))
-                        else:
-                            modified_layer.append(module)
-                    layers.append(nn.Sequential(*modified_layer))
-                elif i == layer_idx:
-                    # For the target layer, we need to stop at the conv layer
-                    conv_layer = []
-                    for module in layer:
-                        if isinstance(module, nn.Conv2d):
-                            conv_layer.append(module)
-                            break
-                    layers.append(nn.Sequential(*conv_layer))
-                    break
-            
-            self.features = nn.Sequential(*layers)
-        
-        def forward(self, x):
-            self.outputs = self.features(x)
-            return self.outputs
-    
-    # Create guided backprop model
-    guided_model = GuidedBackpropModel(model, layer_idx).to(device)
-    
-    # Get activations
-    activations = guided_model(image)
-    
-    # Number of neurons to visualize
-    num_channels = activations.shape[1]
-    num_neurons = min(num_neurons, num_channels)
-    
-    # Create figure
-    fig, axes = plt.subplots(1, num_neurons, figsize=(20, 4))
-    
-    # For each neuron, compute guided backprop
-    for i in range(num_neurons):
-        # Zero gradients
-        guided_model.zero_grad()
-        
-        # Create a mask for the target neuron
-        mask = torch.zeros_like(activations)
-        mask[:, i] = activations[:, i]
-        
-        # Backward pass
-        mask.requires_grad_(True)
-        mask.backward(torch.ones_like(mask))
-        
-        # Get gradients
-        gradients = image.grad.data.clone().cpu().numpy()[0]
-        
-        # Convert gradients to RGB image
-        gradients = np.transpose(gradients, (1, 2, 0))
-        
-        # Take the absolute value and normalize
-        gradients = np.abs(gradients)
-        gradients = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
-        
-        # Plot
-        if num_neurons == 1:
-            axes.imshow(gradients)
-            axes.set_title(f"Neuron {i}")
-            axes.axis('off')
-        else:
-            axes[i].imshow(gradients)
-            axes[i].set_title(f"Neuron {i}")
-            axes[i].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('guided_backprop.png')
-    wandb.log({"guided_backprop": wandb.Image(fig)})
-    plt.close(fig)
 
 def setup_wandb_sweep():
     """
@@ -1100,7 +773,7 @@ def run_sweep(project_name="inaturalist_cnn_sweep"):
     sweep_config = setup_wandb_sweep()
     
     # Create sweep
-    sweep_id = wandb.sweep(sweep_config, project="inaturalist_cnn_sweep")
+    sweep_id = wandb.sweep(sweep_config, project=project_name)
     
     # Run sweep
     wandb.agent(sweep_id, function=train_model_sweep, count=5)
@@ -1169,25 +842,144 @@ def analyze_sweep_results(entity="mm21b044-indian-institute-of-technology-madras
     
     return config_dict
 
-def main(sweep=True, test=True):
+def train_best_model(config, data_dir='/kaggle/input/inaturalist/inaturalist_12K', project_name="inaturalist_cnn_final"):
     """
-    Main function to run the experiment
-    """
-    # Set up wandb
-    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
+    Train the best model based on sweep results.
+    This addresses Question 4: Training and evaluating on test data
     
-    if sweep:
-        # Run hyperparameter sweep
-        print("Starting hyperparameter sweep...")
-        sweep_id = run_sweep(project_name="inaturalist_cnn_sweep")
+    Args:
+        config (dict): Best hyperparameter configuration
+        data_dir (str): Path to dataset directory
+        project_name (str): Name of the wandb project
+    """
+    # Initialize wandb
+    wandb.init(project=project_name, config=config)
+    
+    # Generate filter counts based on strategy
+    if config["filter_counts_strategy"] == 'same':
+        filter_counts = [config["base_filters"]] * 5
+    elif config["filter_counts_strategy"] == 'doubling':
+        filter_counts = [config["base_filters"] * (2**i) for i in range(5)]
+    elif config["filter_counts_strategy"] == 'halving':
+        filter_counts = [config["base_filters"] * (2**(4-i)) for i in range(5)]
+    
+    # Generate filter sizes
+    filter_sizes = [config["filter_size"]] * 5
+    
+    # Create data module
+    data_module = iNaturalistDataModule(
+        data_dir=data_dir,
+        batch_size=config["batch_size"],
+        augmentation=config["augmentation"]
+    )
+    data_module.setup()
+    
+    # Create model with best hyperparameters
+    model = CustomCNN(
+        num_classes=10,  # Assuming 10 classes in iNaturalist subset
+        filter_counts=filter_counts,
+        filter_sizes=filter_sizes,
+        activation=config["activation"],
+        dense_neurons=config["dense_neurons"],
+        dropout_rate=config["dropout_rate"],
+        learning_rate=config["learning_rate"],
+        batch_norm=config["batch_norm"]
+    )
+    
+    # Log model information
+    wandb.log({
+        'total_params': model.total_params,
+        'total_computations': model.total_computations,
+        'model_summary': str(model)
+    })
+    
+    # Setup callbacks
+    callbacks = [
+        ModelCheckpoint(
+            monitor='val_acc',
+            filename='best-{epoch:02d}-{val_acc:.4f}',
+            save_top_k=1,
+            mode='max'
+        )
+    ]
+    
+    # Setup wandb logger
+    wandb_logger = WandbLogger(project=project_name)
+    
+    # Create trainer
+    trainer = Trainer(
+        max_epochs=30,  # Train longer for final model
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=1,
+        callbacks=callbacks,
+        logger=wandb_logger,
+        log_every_n_steps=10
+    )
+    
+    # Train model
+    trainer.fit(model, data_module)
+    
+    # Test model
+    test_results = trainer.test(model, data_module.test_dataloader())
+    
+    return model, test_results[0]['test_acc']
+
+def display_model_architecture(model):
+    """
+    Display the architecture of the model with parameter counts
+    This helps answer Question 1 about parameter and computation counts
+    """
+    print(f"Model Architecture Summary:")
+    print(f"===========================")
+    print(f"Total parameters: {model.total_params:,}")
+    print(f"Total computations: {model.total_computations:,}")
+    print(f"===========================")
+    
+    # Print the formulas for parameter and computation counts
+    input_size = 244  # Adjust if using a different size
+    base_filter = 32  # Example value, adjust as needed
+    k = 3  # Example filter size, adjust as needed
+    n = 512  # Example dense neurons, adjust as needed
+    
+    print(f"Formula for parameter count (with m={base_filter}, k={k}, n={n}):")
+    print(f"Layer 1: m * (3 * k * k + 1) = {base_filter * (3 * k * k + 1)}")
+    print(f"Layers 2-5: 4 * m * (m * k * k + 1) = {4 * base_filter * (base_filter * k * k + 1)}")
+    
+    # Calculate feature map size after 5 pooling layers (size/32)
+    final_feature_size = input_size // 32
+    flattened_size = base_filter * final_feature_size * final_feature_size
+    
+    print(f"Dense layer: flattened_size * n + n = {flattened_size * n + n}")
+    print(f"Output layer: n * num_classes + num_classes = {n * 10 + 10}")
+    
+    print(f"\nFormula for computation count:")
+    print(f"Layer 1: m * 3 * k * k * input_size * input_size")
+    print(f"Layers 2-5: Sum of m * m * k * k * (input_size/(2^i)) * (input_size/(2^i))")
+    print(f"Dense layer: flattened_size * n")
+    print(f"Output layer: n * num_classes")
+
+def main():
+    """
+    Main function to run the complete pipeline
+    """
+    print("Running iNaturalist CNN classifier...")
+    
+    # Step 1: Run a hyperparameter sweep (Question 2)
+    run_sweep_flag = input("Do you want to run a hyperparameter sweep? (y/n): ").lower() == 'y'
+    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
+
+    if run_sweep_flag:
+        print("Running hyperparameter sweep...")
+        sweep_id = run_sweep()
+        print(f"Sweep completed. Sweep ID: {sweep_id}")
         
-        if test==True:
-            # Analyze sweep results
-            best_config = analyze_sweep_results()
-            
-            if best_config==None:
-                # Define best hyperparameters from previous sweep
-                best_config = {
+        # Step 2: Analyze sweep results (Question 3)
+        print("\nAnalyzing sweep results...")
+        best_config = analyze_sweep_results()
+    else:
+        # Use a predefined best configuration if not running sweep
+        print("Using predefined best configuration...")
+        best_config = {
                     'activation': 'mish',
                     'batch_norm': False,
                     'batch_size': 16,
@@ -1203,47 +995,27 @@ def main(sweep=True, test=True):
                     'learning_rate': 0.0001,
                     'input_channels': 3,
                     'filter_counts_strategy': 'same'}
-                
-        
-            # Initialize the data module
-            data_module = iNaturalistDataModule(
-                data_dir='/kaggle/input/inaturalist/inaturalist_12K',
-                batch_size=best_config['batch_size'],
-                augmentation=best_config['augmentation']
-            )
-            
-            # Initialize the model
-            model = CustomCNN(
-                num_classes=10,
-                activation=best_config['activation'],
-                dense_neurons=best_config['dense_neurons'],
-                dropout_rate=best_config['dropout_rate'],
-                learning_rate=best_config['learning_rate'],
-                batch_norm=best_config['batch_norm']
-            )
-            
-            # Initialize the trainer
-            trainer = Trainer(
-                max_epochs=15,
-                accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-                devices=1,
-                log_every_n_steps=10
-            )
-            
-            # Train the model
-            trainer.fit(model, datamodule=data_module)
-
-            # Test the model
-            trainer.test(model, datamodule=data_module)
-            
-            # Train with best hyperparameters
-            print("Training with best hyperparameters...")
-            model = train_final_model(best_config, data_module)
-            
-            # Visualize results
-            visualize_test_samples(model, data_module.test_dataloader())
-            visualize_filters(model)
-            visualize_guided_backprop(model, data_module.test_dataloader())
-
+    
+    # Step 3: Train the best model (Question 4)
+    print("\nTraining best model with configuration:")
+    for key, value in best_config.items():
+        print(f"  {key}: {value}")
+    
+    # Get data directory from user
+    data_dir = input("Enter the path to the iNaturalist dataset directory (default: /kaggle/input/inaturalist/inaturalist_12K): ")
+    if not data_dir:
+        data_dir = '/kaggle/input/inaturalist/inaturalist_12K'
+    
+    # Train best model
+    model, test_accuracy = train_best_model(best_config, data_dir)
+    
+    print(f"\nTraining completed!")
+    print(f"Test accuracy: {test_accuracy:.4f}")
+    
+    # Step 4: Display model architecture (Question 1)
+    display_model_architecture(model)
+    
+    print("\nAll tasks completed successfully!")
+    
 if __name__ == "__main__":
     main()

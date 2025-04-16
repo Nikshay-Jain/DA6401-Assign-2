@@ -1,19 +1,21 @@
+import os
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
-import torchvision
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import LightningModule, LightningDataModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from PIL import Image
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import math
+
 from A_classes import *
 
 def setup_wandb_sweep():
@@ -105,7 +107,7 @@ def train_model_sweep():
     
     # Create trainer
     trainer = Trainer(
-        max_epochs=20,  # Train longer for better results
+        max_epochs=15,  # Train longer for better results
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         devices=1,
         callbacks=callbacks,
@@ -135,20 +137,46 @@ def run_sweep(project_name="inaturalist_cnn_sweep"):
     sweep_config = setup_wandb_sweep()
     
     # Create sweep
-    sweep_id = wandb.sweep(sweep_config, project="inaturalist_cnn_sweep")
+    sweep_id = wandb.sweep(sweep_config, project=project_name)
     
     # Run sweep
-    wandb.agent(sweep_id, function=train_model_sweep, count=7)
+    wandb.agent(sweep_id, function=train_model_sweep, count=5)
     return sweep_id
 
-def analyze_sweep_results(sweep_id):
-    """Inspect sweep runs and print insights"""
+def analyze_sweep_results(entity="mm21b044-indian-institute-of-technology-madras", project="inaturalist_cnn_sweep", metric='best_val_acc'):
+    """
+    Analyze all sweep runs in a W&B project to find the best model configuration.
+
+    Args:
+        entity (str): W&B username or team name.
+        project (str): W&B project name.
+        metric (str): Metric to evaluate runs (default: 'best_val_acc').
+    """
     api = wandb.Api()
-    sweep = api.sweep(f"mm21b044/inaturalist_cnn_sweep/{sweep_id}")
-    runs = sweep.runs
-    best = max(runs, key=lambda r: r.summary.get('best_val_acc', 0))
-    print("Best run:", best.name, best.summary.get('best_val_acc'))
-    print("Hyperparameters:", best.config)
+    runs = api.runs(f"{entity}/{project}")
+
+    best_run = None
+    best_metric = float('-inf')
+
+    for run in runs:
+        # Check if the run is part of a sweep
+        if run.sweep is not None:
+            run_metric = run.summary.get(metric)
+            if run_metric is not None and run_metric > best_metric:
+                best_metric = run_metric
+                best_run = run
+
+    if best_run:
+        print(f"Best run: {best_run.name}")
+        print(f"{metric}: {best_metric}")
+        print("Hyperparameters:")
+        for key, value in best_run.config.items():
+            print(f"  {key}: {value}")
+
+        # Save the configuration to a JSON file
+        config_dict = dict(best_run.config)
+    else:
+        print("No sweep runs found with the specified metric.")
     
     # Generate insights
     print("\nInsights from sweep:")
@@ -175,3 +203,5 @@ def analyze_sweep_results(sweep_id):
     print("\n6. Dropout rate impact:")
     print("   - Moderate dropout rates (0.3-0.5) perform better than lower rates")
     print("   - This suggests that preventing co-adaptation of neurons is important for this dataset")
+    
+    return config_dict

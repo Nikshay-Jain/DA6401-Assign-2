@@ -23,51 +23,62 @@ set_seed()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-def main(sweep=True):
+def main():
     """
-    Main function to run the experiment
+    Main function to run the complete pipeline
     """
-    # Set up wandb
-    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
+    print("Running iNaturalist CNN classifier...")
     
-    if sweep:
-        # Run hyperparameter sweep
-        print("Starting hyperparameter sweep...")
-        sweep_id = run_sweep(project_name="inaturalist_cnn_sweep")
-        # Analyze sweep results
-        analyze_sweep_results(sweep_id)
-    else:
-        # Define best hyperparameters from previous sweep
-        best_config = {
-            'filter_counts_strategy': 'doubling',
-            'base_filters': 32,
-            'filter_size': 3,
-            'activation': 'relu',
-            'dense_neurons': 512,
-            'dropout_rate': 0.3,
-            'learning_rate': 0.001,
-            'batch_norm': True,
-            'batch_size': 32,
-            'augmentation': True
-        }
-        
-        # Create data module
-        data_module = iNaturalistDataModule(
-            data_dir='inaturalist',
-            batch_size=best_config['batch_size'],
-            augmentation=best_config['augmentation']
-        )
-        data_module.setup()
-        
-        # Train with best hyperparameters
-        print("Training with best hyperparameters...")
-        model = train_final_model(best_config, data_module)
-        
-        # Visualize results
-        visualize_test_samples(model, data_module.test_dataloader())
-        visualize_filters(model)
-        visualize_guided_backprop(model, data_module.test_dataloader())
+    # Step 1: Run a hyperparameter sweep (Question 2)
+    run_sweep_flag = input("Do you want to run a hyperparameter sweep? (y/n): ").lower() == 'y'
+    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
 
+    if run_sweep_flag:
+        print("Running hyperparameter sweep...")
+        sweep_id = run_sweep()
+        print(f"Sweep completed. Sweep ID: {sweep_id}")
+        
+        # Step 2: Analyze sweep results (Question 3)
+        print("\nAnalyzing sweep results...")
+        best_config = analyze_sweep_results()
+    else:
+        # Use a predefined best configuration if not running sweep
+        print("Using predefined best configuration...")
+        best_config = {
+                    'activation': 'mish',
+                    'batch_norm': False,
+                    'batch_size': 16,
+                    'input_size': 224,
+                    'filter_size': 5,
+                    'num_classes': 10,
+                    'augmentation': False,
+                    'base_filters': 64,
+                    'dropout_rate': 0.5,
+                    'filter_sizes': [5, 5, 5, 5, 5],
+                    'dense_neurons': 512,
+                    'filter_counts': [64, 64, 64, 64, 64],
+                    'learning_rate': 0.0001,
+                    'input_channels': 3,
+                    'filter_counts_strategy': 'same'}
+    
+    # Step 3: Train the best model (Question 4)
+    print("\nTraining best model with configuration:")
+    for key, value in best_config.items():
+        print(f"  {key}: {value}")
+    
+    # Get data directory from user
+    data_dir = "/kaggle/input/inaturalist/inaturalist_12K"
+    
+    # Train best model
+    model, test_accuracy = train_best_model(best_config, data_dir)
+    
+    print(f"\nTraining completed!")
+    print(f"Test accuracy: {test_accuracy:.4f}")
+    
+    # Step 4: Display model architecture (Question 1)
+    display_model_architecture(model)
+    
+    print("\nAll tasks completed successfully!")
+    
 if __name__ == "__main__":
-    # Set sweep to True for hyperparameter tuning, False for final training
-    main(sweep=True)
+    main()

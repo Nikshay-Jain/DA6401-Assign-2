@@ -5,15 +5,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
-import torchvision
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import LightningModule, LightningDataModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from PIL import Image
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import math
@@ -62,7 +60,6 @@ class CustomCNN(LightningModule):
         
         # Build the network
         self.conv_layers = nn.ModuleList()
-        
         
         # Calculate feature map sizes for computational analysis
         feature_size = input_size
@@ -125,7 +122,9 @@ class CustomCNN(LightningModule):
         self.total_computations = self.calculate_total_computations()
         
         # For storing test predictions - needed for visualization
-        self.test_outputs = []
+        self.test_predictions = []
+        self.test_targets = []
+        self.test_images = []
         
     def forward(self, x):
         """Forward pass through the network"""
@@ -307,67 +306,67 @@ class CustomCNN(LightningModule):
         self.log('test_loss', loss, prog_bar=True)
         self.log('test_acc', acc, prog_bar=True)
         
-        # Store outputs for later visualization
-        output = {'loss': loss, 'preds': preds, 'targets': y, 'images': x}
-        self.test_outputs.append(output)
+        # Store images, predictions and targets for later visualization
+        # Use detach to prevent memory leaks
+        self.test_predictions.append(preds.detach().cpu())
+        self.test_targets.append(y.detach().cpu())
+        self.test_images.append(x.detach().cpu())
         
-        return output
+        return {'loss': loss, 'preds': preds, 'targets': y}
     
     def on_test_epoch_end(self):
-        """Gather predictions after test epoch"""
-        if not self.test_outputs:
+        """Process and visualize test results at the end of testing"""
+        if not self.test_predictions:
             return
-            
-        # Concatenate all batch results
-        all_preds = torch.cat([x['preds'] for x in self.test_outputs])
-        all_targets = torch.cat([x['targets'] for x in self.test_outputs])
-        all_images = torch.cat([x['images'] for x in self.test_outputs])
         
-        # Calculate confusion matrix
-        conf_matrix = torch.zeros(self.num_classes, self.num_classes, device=all_preds.device)
-        for t, p in zip(all_targets, all_preds):
-            conf_matrix[t.long(), p.long()] += 1
+        # Concatenate all predictions, targets, and images
+        all_preds = torch.cat(self.test_predictions)
+        all_targets = torch.cat(self.test_targets)
+        all_images = torch.cat(self.test_images)
         
-        # Log confusion matrix with wandb
-        wandb.log({"confusion_matrix": wandb.plot.confusion_matrix(
-            preds=all_preds.cpu().numpy(),
-            y_true=all_targets.cpu().numpy(),
-            class_names=[str(i) for i in range(self.num_classes)]
-        )})
+        # Calculate accuracy
+        accuracy = (all_preds == all_targets).float().mean().item()
+        print(f"Test accuracy: {accuracy:.4f}")
         
-        # Visualize test images with predictions (10×3 grid)
-        self.visualize_test_predictions(all_images[:30], all_preds[:30], all_targets[:30])
+        # Visualize test predictions in a 10×3 grid
+        self.visualize_test_predictions(all_images, all_preds, all_targets)
         
-        # Optional: Visualize filters
+        # Visualize first layer filters
         self.visualize_first_layer_filters()
         
-        # Optional: Perform guided backpropagation
+        # Perform guided backpropagation on last convolutional layer
         if len(all_images) > 0:
-            self.visualize_guided_backprop(all_images[0])
+            # Take a single image for guided backprop
+            sample_image = all_images[0].unsqueeze(0).to(self.device)
+            self.visualize_guided_backprop(sample_image)
         
-        # Calculate overall test accuracy
-        test_acc = (all_preds == all_targets).float().mean()
-        print(f"Test Accuracy: {test_acc:.4f}")
-        
-        # Clear test outputs
-        self.test_outputs.clear()
+        # Clear stored test data to free memory
+        self.test_predictions = []
+        self.test_targets = []
+        self.test_images = []
     
     def visualize_test_predictions(self, images, predictions, targets):
         """
         Visualize test images with predictions in a 10×3 grid
         This addresses Question 4: Providing a 10×3 grid of test images and predictions
         """
-        fig, axes = plt.subplots(10, 3, figsize=(12, 30))
+        # Create figure with 10×3 grid
+        fig, axes = plt.subplots(10, 3, figsize=(15, 30))
         
         # Get class names if available
-        class_names = self.trainer.datamodule.test_dataset.classes if hasattr(self.trainer, 'datamodule') else None
+        class_names = None
+        if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'test_dataset'):
+            if hasattr(self.trainer.datamodule.test_dataset, 'classes'):
+                class_names = self.trainer.datamodule.test_dataset.classes
         
-        for i in range(min(30, len(images))):
-            row = i // 3
-            col = i % 3
+        # Use minimum of 30 samples or available samples
+        num_samples = min(30, len(images))
+        
+        for i in range(num_samples):
+            row, col = i // 3, i % 3
             
             # Get image
-            img = images[i].cpu().numpy().transpose(1, 2, 0)
+            img = images[i].numpy().transpose(1, 2, 0)
             
             # De-normalize image
             mean = np.array([0.485, 0.456, 0.406])
@@ -379,19 +378,21 @@ class CustomCNN(LightningModule):
             pred = predictions[i].item()
             target = targets[i].item()
             
+            # Use class names if available, otherwise use class indices
             pred_name = class_names[pred] if class_names else f"Class {pred}"
             target_name = class_names[target] if class_names else f"Class {target}"
             
             # Display image
             axes[row, col].imshow(img)
             
-            # Set title: green if correct, red if wrong
+            # Set title with color: green if correct, red if wrong
             color = 'green' if pred == target else 'red'
             axes[row, col].set_title(f"Pred: {pred_name}\nTrue: {target_name}", color=color)
             axes[row, col].axis('off')
         
         plt.tight_layout()
-        wandb.log({"test_predictions": wandb.Image(fig)})
+        plt.savefig('test_predictions_grid.png')
+        wandb.log({"test_predictions_grid": wandb.Image(fig)})
         plt.close(fig)
     
     def visualize_first_layer_filters(self):
@@ -399,121 +400,167 @@ class CustomCNN(LightningModule):
         Visualize filters in the first convolutional layer
         This addresses the optional part of Question 4
         """
-        # Get first layer filters
+        # Get weights of the first convolutional layer
         filters = self.conv_layers[0][0].weight.data.cpu()
         
-        # Number of filters in first layer
+        # Number of filters in the first layer
         num_filters = filters.shape[0]
         grid_size = int(np.ceil(np.sqrt(num_filters)))
         
-        # Create figure
+        # Create figure for the grid
         fig, axes = plt.subplots(grid_size, grid_size, figsize=(15, 15))
         
-        # Plot filters
+        # Plot each filter
         for i, ax in enumerate(axes.flat):
             if i < num_filters:
-                # Normalize filter for visualization
-                f = filters[i].permute(1, 2, 0).numpy()
+                # Get the filter
+                filter_weights = filters[i]
                 
-                # If it's a 3-channel filter (RGB)
-                if f.shape[2] == 3:
-                    # Normalize each channel
-                    f = (f - f.min()) / (f.max() - f.min() + 1e-8)
-                    ax.imshow(f)
-                else:
-                    # For single channel filters
-                    f = f[:, :, 0]
-                    f = (f - f.min()) / (f.max() - f.min() + 1e-8)
-                    ax.imshow(f, cmap='gray')
+                # Normalize for better visualization
+                # Convert to numpy and transpose to (H, W, C)
+                f_np = filter_weights.permute(1, 2, 0).numpy()
                 
+                # Normalize to [0, 1]
+                f_np = (f_np - f_np.min()) / (f_np.max() - f_np.min() + 1e-8)
+                
+                # Display the filter
+                ax.imshow(f_np)
                 ax.set_title(f"Filter {i+1}")
+            
+            # Turn off axis for all subplots
             ax.axis('off')
         
         plt.tight_layout()
+        plt.savefig('first_layer_filters.png')
         wandb.log({"first_layer_filters": wandb.Image(fig)})
         plt.close(fig)
     
-    def visualize_guided_backprop(self, input_image, layer_idx=4, neurons=10):
+    def visualize_guided_backprop(self, input_image):
         """
-        Apply guided back-propagation on neurons in the specified conv layer
+        Apply guided back-propagation on neurons in the last conv layer
         This addresses the optional part of Question 4
         
         Args:
             input_image: Single input image tensor [1, C, H, W]
-            layer_idx: Index of conv layer to visualize (0-4)
-            neurons: Number of neurons to visualize
         """
-        self.eval()
+        self.eval()  # Set model to evaluation mode
         
-        # Create a copy of the image that requires gradient
-        input_tensor = input_image.clone().detach().unsqueeze(0).to(self.device)
-        input_tensor.requires_grad = True
+        # Skip guided backprop if running on CPU as it can be problematic
+        if not torch.cuda.is_available():
+            print("Skipping guided backpropagation visualization as it may be unstable on CPU")
+            return
         
-        # Forward pass to get activations
-        activations = []
-        x = input_tensor
-        
-        # Pass through layers up to the specified conv layer
-        for i, layer in enumerate(self.conv_layers):
-            if i <= layer_idx:
-                # For the target layer, we need the pre-activation output
-                if i == layer_idx:
-                    # Get conv output before activation
-                    for j, module in enumerate(layer):
-                        if j == 0:  # Conv2d module
-                            x = module(x)
-                            # Store activations
-                            activations = x.clone()
-                            break
-                else:
+        try:
+            # We'll visualize 10 neurons from the last conv layer (CONV5)
+            layer_idx = 4  # 5th layer (0-indexed)
+            num_neurons = 10
+            
+            # Create a copy of the image that requires gradient
+            image = input_image.clone().detach()
+            image.requires_grad_(True)
+            
+            # Forward pass through each layer until the target layer
+            activations = None
+            x = image
+            
+            # Store hooks for guided backprop
+            handles = []
+            
+            # Define hook for backward pass
+            def backward_hook_fn(module, grad_input, grad_output):
+                # In guided backprop, we only pass positive gradients to positive activations
+                if isinstance(module, (nn.ReLU, nn.GELU, nn.SiLU, nn.Mish)):
+                    return (torch.clamp(grad_input[0], min=0.0),)
+            
+            # Register hooks for all activation functions
+            for layer in self.conv_layers:
+                for module in layer:
+                    if isinstance(module, (nn.ReLU, nn.GELU, nn.SiLU, nn.Mish)):
+                        handle = module.register_backward_hook(backward_hook_fn)
+                        handles.append(handle)
+            
+            # Forward pass to the target layer
+            for i, layer in enumerate(self.conv_layers):
+                if i < layer_idx:
                     x = layer(x)
+                elif i == layer_idx:
+                    # For the target layer, we need to get activations before the activation function
+                    for j, module in enumerate(layer):
+                        x = module(x)
+                        if isinstance(module, nn.Conv2d):
+                            # Store activations after conv but before activation
+                            activations = x.clone()
+            
+            # If no activations were captured, return
+            if activations is None:
+                print("Failed to capture activations")
+                for handle in handles:
+                    handle.remove()
+                return
+            
+            # Create figure for guided backprop visualizations
+            fig, axes = plt.subplots(1, min(num_neurons, activations.shape[1]), figsize=(20, 4))
+            
+            # Get the number of channels in the activations (number of filters in the conv layer)
+            num_channels = activations.shape[1]
+            num_neurons = min(num_neurons, num_channels)
+            
+            for i in range(num_neurons):
+                # Zero gradients
+                if image.grad is not None:
+                    image.grad.zero_()
+                
+                # Create a gradient target that selects only the current neuron
+                grad_target = torch.zeros_like(activations)
+                
+                # Set the gradient for a specific neuron - check if the activations have a gradient function
+                if activations.requires_grad:
+                    grad_target[0, i] = 1.0  # Just use 1.0 instead of activations[0, i].sum()
+                    
+                    # Backward pass
+                    activations.backward(gradient=grad_target, retain_graph=True)
+                    
+                    # Get gradients with respect to the input image
+                    if image.grad is not None:
+                        gradients = image.grad.clone().detach().cpu().numpy()[0]
+                        
+                        # Convert to RGB image
+                        gradients = np.transpose(gradients, (1, 2, 0))
+                        
+                        # Take absolute value and normalize for visualization
+                        gradients = np.abs(gradients)
+                        gradients = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
+                        
+                        # Plot
+                        if num_neurons == 1:
+                            axes.imshow(gradients)
+                            axes.set_title(f"Neuron {i}")
+                            axes.axis('off')
+                        else:
+                            axes[i].imshow(gradients)
+                            axes[i].set_title(f"Neuron {i}")
+                            axes[i].axis('off')
+                    else:
+                        print(f"No gradients for neuron {i}")
+                else:
+                    print("Activations do not require gradients")
+            
+            plt.tight_layout()
+            plt.savefig('guided_backprop.png')
+            wandb.log({"guided_backprop": wandb.Image(fig)})
+            plt.close(fig)
         
-        # Get sample neurons to visualize
-        num_channels = activations.shape[1]
-        selected_neurons = list(range(min(neurons, num_channels)))
+        except Exception as e:
+            print(f"Error in guided backpropagation: {e}")
+            print("Skipping guided backpropagation visualization")
         
-        # Create figure for guided backprop visualizations
-        fig, axes = plt.subplots(1, len(selected_neurons), figsize=(20, 4))
-        
-        for i, neuron_idx in enumerate(selected_neurons):
-            # Zero gradients
-            self.zero_grad()
-            if input_tensor.grad is not None:
-                input_tensor.grad.zero_()
-            
-            # Create a gradient target that selects only the current neuron
-            grad_target = torch.zeros_like(activations)
-            grad_target[0, neuron_idx] = torch.ones_like(activations[0, neuron_idx])
-            
-            # Backward pass
-            activations.backward(gradient=grad_target, retain_graph=True)
-            
-            # Get gradients
-            gradients = input_tensor.grad.clone().detach().cpu().numpy()[0]
-            
-            # Convert to RGB image
-            gradients = np.transpose(gradients, (1, 2, 0))
-            
-            # Take absolute value and normalize for visualization
-            gradients = np.abs(gradients)
-            gradients = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
-            
-            # Plot
-            if len(selected_neurons) == 1:
-                axes.imshow(gradients)
-                axes.set_title(f"Neuron {neuron_idx}")
-                axes.axis('off')
-            else:
-                axes[i].imshow(gradients)
-                axes[i].set_title(f"Neuron {neuron_idx}")
-                axes[i].axis('off')
-        
-        plt.tight_layout()
-        wandb.log({f"guided_backprop_layer{layer_idx}": wandb.Image(fig)})
-        plt.close(fig)
+        finally:
+            # Remove hooks to prevent memory leaks
+            for handle in handles:
+                handle.remove()
 
-class iNaturalistDataModule(LightningModule):
-    def __init__(self, data_dir='inaturalist', batch_size=32, num_workers=4, 
+class iNaturalistDataModule(LightningDataModule):
+    def __init__(self, data_dir='/kaggle/input/inaturalist/inaturalist_12K', batch_size=32, num_workers=4, 
                  input_size=244, val_split=0.2, augmentation=False):
         super().__init__()
         self.data_dir = data_dir
