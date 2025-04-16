@@ -53,7 +53,7 @@ def main(sweep=True):
         
         # Create data module
         data_module = iNaturalistDataModule(
-            data_dir='/kaggle/input/inaturalist/inaturalist_12K',
+            data_dir='inaturalist',
             batch_size=best_config['batch_size'],
             augmentation=best_config['augmentation']
         )
@@ -67,3 +67,7 @@ def main(sweep=True):
         visualize_test_samples(model, data_module.test_dataloader())
         visualize_filters(model)
         visualize_guided_backprop(model, data_module.test_dataloader())
+
+if __name__ == "__main__":
+    # Set sweep to True for hyperparameter tuning, False for final training
+    main(sweep=True)

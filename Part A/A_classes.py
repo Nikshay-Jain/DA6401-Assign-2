@@ -513,7 +513,7 @@ class CustomCNN(LightningModule):
         plt.close(fig)
 
 class iNaturalistDataModule(LightningModule):
-    def __init__(self, data_dir='/kaggle/input/inaturalist/inaturalist_12K', batch_size=32, num_workers=4, 
+    def __init__(self, data_dir='inaturalist', batch_size=32, num_workers=4, 
                  input_size=244, val_split=0.2, augmentation=False):
         super().__init__()
         self.data_dir = data_dir
