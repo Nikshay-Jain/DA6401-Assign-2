@@ -5,7 +5,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 from A_classes import *
 
-def train_best_model(config, data_dir='/kaggle/input/inaturalist/inaturalist_12K', project_name="inaturalist_cnn_final"):
+def train_best_model(config, data_dir='inaturalist', project_name="inaturalist_cnn_final"):
     """
     Train the best model based on sweep results.
     This addresses Question 4: Training and evaluating on test data
@@ -37,7 +37,7 @@ def train_best_model(config, data_dir='/kaggle/input/inaturalist/inaturalist_12K
     )
     data_module.setup()
     
-    # Create model with best hyperparameters
+    # Create model with best hyperparams
     model = CustomCNN(
         num_classes=10,  # Assuming 10 classes in iNaturalist subset
         filter_counts=filter_counts,
@@ -93,19 +93,17 @@ def display_model_architecture(model):
     This helps answer Question 1 about parameter and computation counts
     """
     print(f"Model Architecture Summary:")
-    print(f"===========================")
-    print(f"Total parameters: {model.total_params:,}")
-    print(f"Total computations: {model.total_computations:,}")
-    print(f"===========================")
+    print(f"Total no of params: {model.total_params:,}")
+    print(f"Total no of computations: {model.total_computations:,}")
     
     # Use the model's built-in formula methods
     base_filter = 32  # Example value
-    k = 3  # Example filter size
-    n = 512  # Example dense neurons
+    k = 3             # Example filter size
+    n = 512           # Example dense neurons
     
     print(f"Formula for parameter count (with m={base_filter}, k={k}, n={n}):")
     param_count = model.formula_parameter_count(base_filter, k, n)
-    print(f"Total parameters by formula: {param_count:,}")
+    print(f"Total params by formula: {param_count:,}")
     
     print(f"\nFormula for computation count:")
     comp_count = model.formula_computation_count(base_filter, k, n)

@@ -69,7 +69,7 @@ def main():
         print(f"  {key}: {value}")
     
     # Get data directory from user
-    data_dir = "/kaggle/input/inaturalist/inaturalist_12K"
+    data_dir = "inaturalist"
     
     # Train best model
     model, test_accuracy = train_best_model(best_config, data_dir)

@@ -12,8 +12,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 
 # Define paths
-TRAIN_DIR = "/kaggle/input/inaturalist/inaturalist_12K/train"
-TEST_DIR = "/kaggle/input/inaturalist/inaturalist_12K/val"
+TRAIN_DIR = "inaturalist/train"
+TEST_DIR = "inaturalist/val"
 
 # Custom Dataset for iNaturalist
 class INaturalistDataset(Dataset):

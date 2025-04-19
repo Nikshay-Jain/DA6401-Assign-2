@@ -17,8 +17,8 @@ class CustomCNN(LightningModule):
                  filter_sizes=[3, 3, 3, 3, 3],
                  activation='relu',
                  dense_neurons=512,
-                 input_channels=3,
-                 input_size=244,
+                 inp_channels=3,
+                 inp_size=244,
                  dropout_rate=0.5,
                  learning_rate=0.001,
                  batch_norm=False):
@@ -31,16 +31,16 @@ class CustomCNN(LightningModule):
             filter_sizes (list): Size of filters in each conv layer
             activation (str): Activation function ('relu', 'gelu', 'silu', 'mish')
             dense_neurons (int): Number of neurons in the dense layer
-            input_channels (int): Number of input channels (3 for RGB)
-            input_size (int): Size of input images (assumes square)
+            inp_channels (int): Number of input channels (3 for RGB)
+            inp_size (int): Size of input images (assumes square)
             dropout_rate (float): Dropout rate
-            learning_rate (float): Learning rate for optimizer
+            learning_rate (float): Learning rate for optmiser
             batch_norm (bool): Whether to use batch normalization
         """
         super().__init__()
         self.save_hyperparameters()
         
-        # Configure activation function
+        # Configure all the activation functions
         if activation == 'relu':
             self.activation = nn.ReLU()
         elif activation == 'gelu':
@@ -56,11 +56,11 @@ class CustomCNN(LightningModule):
         self.conv_layers = nn.ModuleList()
         
         # Calculate feature map sizes for computational analysis
-        feature_size = input_size
+        feature_size = inp_size
         feature_sizes = [feature_size]
         
         # First convolutional block
-        in_channels = input_channels
+        in_channels = inp_channels
         for i in range(5):
             out_channels = filter_counts[i]
             filter_size = filter_sizes[i]
@@ -75,20 +75,11 @@ class CustomCNN(LightningModule):
             if batch_norm:
                 conv_block.append(nn.BatchNorm2d(out_channels))
             
-            # Activation
             conv_block.append(self.activation)
-            
-            # Max pooling
             conv_block.append(nn.MaxPool2d(kernel_size=2, stride=2))
-            
-            # Add block to model
             self.conv_layers.append(nn.Sequential(*conv_block))
-            
-            # Update feature size (divided by 2 due to max pooling)
             feature_size = feature_size // 2
             feature_sizes.append(feature_size)
-            
-            # Update channels for next layer
             in_channels = out_channels
         
         # Calculate flattened features size
@@ -122,11 +113,9 @@ class CustomCNN(LightningModule):
         
     def forward(self, x):
         """Forward pass through the network"""
-        # Pass through convolutional layers
         for conv_layer in self.conv_layers:
             x = conv_layer(x)
         
-        # Pass through classifier
         return self.classifier(x)
     
     def calculate_total_params(self):
@@ -135,22 +124,19 @@ class CustomCNN(LightningModule):
         This answers Question 1: Total parameters with m filters of size k×k and n neurons
         """
         total = 0
-        
-        # Convolutional layers parameters
-        input_channels = 3
+        inp_channels = 3
         for i in range(5):
             output_channels = self.filter_counts[i]
             filter_size = self.filter_sizes[i]
             
             # Weight parameters: out_channels * in_channels * filter_height * filter_width
-            params = output_channels * input_channels * filter_size * filter_size
+            params = output_channels * inp_channels * filter_size * filter_size
             # Bias parameters: out_channels
             params += output_channels
             
             total += params
-            input_channels = output_channels
+            inp_channels = output_channels
         
-        # Dense layer parameters
         # First dense layer: flattened_size * dense_neurons + dense_neurons (bias)
         total += self.flattened_size * self.hparams.dense_neurons + self.hparams.dense_neurons
         # Output layer: dense_neurons * num_classes + num_classes (bias)
@@ -164,22 +150,18 @@ class CustomCNN(LightningModule):
         This answers Question 1: Total computations with m filters of size k×k and n neurons
         """
         total = 0
-        
-        # Convolutional layers computations
-        input_channels = 3
+        inp_channels = 3
         for i in range(5):
             output_channels = self.filter_counts[i]
             filter_size = self.filter_sizes[i]
             feature_size = self.feature_sizes[i]
-            
-            # Convolution computations: 
+
             # out_channels * in_channels * filter_height * filter_width * feature_height * feature_width
-            comp = output_channels * input_channels * filter_size * filter_size * feature_size * feature_size
+            comp = output_channels * inp_channels * filter_size * filter_size * feature_size * feature_size
             
             total += comp
-            input_channels = output_channels
+            inp_channels = output_channels
         
-        # Dense layer computations
         # First dense layer: flattened_size * dense_neurons
         total += self.flattened_size * self.hparams.dense_neurons
         # Output layer: dense_neurons * num_classes
@@ -202,7 +184,7 @@ class CustomCNN(LightningModule):
         other_layers_params = 4 * m * (m * k * k + 1)
         
         # Calculate feature map size after 5 pooling layers (size/32)
-        final_feature_size = self.hparams.input_size // 32
+        final_feature_size = self.hparams.inp_size // 32
         
         # Feature map size after 5 layers
         flattened_size = m * final_feature_size * final_feature_size
@@ -223,23 +205,23 @@ class CustomCNN(LightningModule):
         n: number of neurons in dense layer
         """
         total_comp = 0
-        input_size = self.hparams.input_size
+        inp_size = self.hparams.inp_size
         
         # Layer 1: m filters, each 3*k*k computations per output position
-        layer1_comp = m * 3 * k * k * input_size * input_size
+        layer1_comp = m * 3 * k * k * inp_size * inp_size
         total_comp += layer1_comp
         
-        # Update input size after pooling
-        input_size //= 2
+        # Update inp size after pooling
+        inp_size //= 2
         
         # Layers 2-5
         for i in range(4):
-            layer_comp = m * m * k * k * input_size * input_size
+            layer_comp = m * m * k * k * inp_size * inp_size
             total_comp += layer_comp
-            input_size //= 2
+            inp_size //= 2
         
         # Feature map size after 5 layers
-        flattened_size = m * input_size * input_size
+        flattened_size = m * inp_size * inp_size
         
         # Dense layer: flattened_size * n multiplications
         dense_layer_comp = flattened_size * n
@@ -251,8 +233,8 @@ class CustomCNN(LightningModule):
     
     def configure_optimizers(self):
         """Configure optimizer"""
-        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
-        return optimizer
+        opt = optim.Adam(self.parameters(), lr=self.learning_rate)
+        return opt
     
     def training_step(self, batch, batch_idx):
         """Training step"""
@@ -429,13 +411,13 @@ class CustomCNN(LightningModule):
         wandb.log({"first_layer_filters": wandb.Image(fig)})
         plt.close(fig)
     
-    def visualize_guided_backprop(self, input_image):
+    def visualize_guided_backprop(self, inp_image):
         """
         Apply guided back-propagation on neurons in the last conv layer
         This addresses the optional part of Question 4
         
         Args:
-            input_image: Single input image tensor [1, C, H, W]
+            inp_image: Single inp image tensor [1, C, H, W]
         """
         self.eval()  # Set model to evaluation mode
         
@@ -450,7 +432,7 @@ class CustomCNN(LightningModule):
             num_neurons = 10
             
             # Create a copy of the image that requires gradient
-            image = input_image.clone().detach()
+            image = inp_image.clone().detach()
             image.requires_grad_(True)
             
             # Forward pass through each layer until the target layer
@@ -461,10 +443,10 @@ class CustomCNN(LightningModule):
             handles = []
             
             # Define hook for backward pass
-            def backward_hook_fn(module, grad_input, grad_output):
+            def backward_hook_fn(module, grad_inp, grad_output):
                 # In guided backprop, we only pass positive gradients to positive activations
                 if isinstance(module, (nn.ReLU, nn.GELU, nn.SiLU, nn.Mish)):
-                    return (torch.clamp(grad_input[0], min=0.0),)
+                    return (torch.clamp(grad_inp[0], min=0.0),)
             
             # Register hooks for all activation functions
             for layer in self.conv_layers:
@@ -554,13 +536,13 @@ class CustomCNN(LightningModule):
                 handle.remove()
 
 class iNaturalistDataModule(LightningDataModule):
-    def __init__(self, data_dir='/kaggle/input/inaturalist/inaturalist_12K', batch_size=32, num_workers=4, 
-                 input_size=244, val_split=0.2, augmentation=False):
+    def __init__(self, data_dir='<insert your data directory here>', batch_size=32, num_workers=4, 
+                 inp_size=244, val_split=0.2, augmentation=False):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.input_size = input_size
+        self.inp_size = inp_size
         self.val_split = val_split
         self.augmentation = augmentation
         self.class_names = None
@@ -570,7 +552,7 @@ class iNaturalistDataModule(LightningDataModule):
         # Define transformations
         if self.augmentation:
             train_transform = transforms.Compose([
-                transforms.RandomResizedCrop(self.input_size),
+                transforms.RandomResizedCrop(self.inp_size),
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomRotation(10),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
@@ -579,13 +561,13 @@ class iNaturalistDataModule(LightningDataModule):
             ])
         else:
             train_transform = transforms.Compose([
-                transforms.Resize((self.input_size, self.input_size)),
+                transforms.Resize((self.inp_size, self.inp_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
             
         val_transform = transforms.Compose([
-            transforms.Resize((self.input_size, self.input_size)),
+            transforms.Resize((self.inp_size, self.inp_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -634,7 +616,7 @@ class iNaturalistDataModule(LightningDataModule):
     def val_dataloader(self):
         """Return validation dataloader"""
         return DataLoader(
-            self.train_dataset,  # Use the original train dataset with validation indices
+            self.train_dataset,
             batch_size=self.batch_size,
             sampler=self.val_sampler,
             num_workers=self.num_workers

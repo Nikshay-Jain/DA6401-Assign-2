@@ -13,6 +13,8 @@ This project focuses on training & evaluating CNN models for the CIFAR-10 datase
 ```bash
 DA6401-Assign-2
 ├── inaturalist/                            # Original raw dataset directory
+│   ├── train/                              # train dir -> splitted into train and val in code
+│   └── val/                                # val dir -> used for test
 ├── .venv                                   # Virtual env
 ├── Part-A/                                 # Python scripts for part A
 │   ├── A_classes.py                        # Contains code for all the classes necessary
@@ -49,14 +51,13 @@ DA6401-Assign-2
    This file installs the libraries used by the code:
 
 ## Usage
-### Part A:
-You can have a look at the entire execution of the Kaggle notebook I've put in the parent directory or go these executions:
+Before any usage, just go to the **respective main function file** and fill in your **API key** in the variable named `key`. This would help in logging into wandb servers. Please note, it is to be done for all the main files.
 
+### Part A:
 Run the script by executing this command in the terminal
 ```bash
 python Part-A\A_main.py
 ```
-This asks you for the wandb.ai API key which you have to feed in for getting connected to the servers which can be entered via command line.
 
 Next, it asks you if you want to run the sweeps (y/n):
 - for testing the sweeps part, type 'y' and the run_sweeps function is triggered for the same.
@@ -74,7 +75,7 @@ However, if you want to compare models like efficentnet, vgg16, vit_b_16, you ca
 python Part-B\B_main_models.py
 ```
 
-Both of these would ask you for the wandb.ai API key which you have to feed in for getting connected to the servers which can be entered via command line.
+Both of these would ask you for the wandb.ai API key which you have to feed in for getting connected to the servers which can be entered as mentioned above.
 
 ## Closing Note:
 The link to the GitHub repo is attached here: https://github.com/Nikshay-Jain/DA6401-Assign-2
