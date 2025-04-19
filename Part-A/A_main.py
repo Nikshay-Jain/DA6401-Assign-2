@@ -28,10 +28,12 @@ def main():
     Main function to run the complete pipeline
     """
     print("Running iNaturalist CNN classifier...")
-    
+
     # Step 1: Run a hyperparameter sweep (Question 2)
     run_sweep_flag = input("Do you want to run a hyperparameter sweep? (y/n): ").lower() == 'y'
-    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
+    
+    key = ""      # Add your WandB API key here
+    wandb.login(key=key)
 
     if run_sweep_flag:
         print("Running hyperparameter sweep...")

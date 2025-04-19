@@ -164,31 +164,5 @@ def analyze_sweep_results(entity="mm21b044-indian-institute-of-technology-madras
         config_dict = dict(best_run.config)
     else:
         print("No sweep runs found with the specified metric.")
-    
-    # Generate insights
-    print("\nInsights from sweep:")
-    print("1. Filter organization strategy impact:")
-    print("   - Doubling filters in successive layers generally performs better than same filters or halving")
-    print("   - This suggests that increasing complexity in deeper layers captures hierarchical features")
-    
-    print("\n2. Activation function impact:")
-    print("   - ReLU and SiLU tend to perform better than GELU and Mish")
-    print("   - The difference is small, suggesting that the activation function is not the most critical factor")
-    
-    print("\n3. Batch normalization impact:")
-    print("   - Models with batch normalization consistently perform better")
-    print("   - This indicates the importance of normalizing activations for stable training")
-    
-    print("\n4. Data augmentation impact:")
-    print("   - Models with data augmentation generally show better generalization")
-    print("   - This confirms that augmentation helps prevent overfitting")
-    
-    print("\n5. Filter size impact:")
-    print("   - Smaller filters (3x3) generally perform better than larger ones (5x5)")
-    print("   - This aligns with the trend in deep learning to use smaller filters in deeper networks")
-    
-    print("\n6. Dropout rate impact:")
-    print("   - Moderate dropout rates (0.3-0.5) perform better than lower rates")
-    print("   - This suggests that preventing co-adaptation of neurons is important for this dataset")
-    
+        
     return config_dict

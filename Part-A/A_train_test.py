@@ -98,25 +98,15 @@ def display_model_architecture(model):
     print(f"Total computations: {model.total_computations:,}")
     print(f"===========================")
     
-    # Print the formulas for parameter and computation counts
-    input_size = 244  # Adjust if using a different size
-    base_filter = 32  # Example value, adjust as needed
-    k = 3  # Example filter size, adjust as needed
-    n = 512  # Example dense neurons, adjust as needed
+    # Use the model's built-in formula methods
+    base_filter = 32  # Example value
+    k = 3  # Example filter size
+    n = 512  # Example dense neurons
     
     print(f"Formula for parameter count (with m={base_filter}, k={k}, n={n}):")
-    print(f"Layer 1: m * (3 * k * k + 1) = {base_filter * (3 * k * k + 1)}")
-    print(f"Layers 2-5: 4 * m * (m * k * k + 1) = {4 * base_filter * (base_filter * k * k + 1)}")
-    
-    # Calculate feature map size after 5 pooling layers (size/32)
-    final_feature_size = input_size // 32
-    flattened_size = base_filter * final_feature_size * final_feature_size
-    
-    print(f"Dense layer: flattened_size * n + n = {flattened_size * n + n}")
-    print(f"Output layer: n * num_classes + num_classes = {n * 10 + 10}")
+    param_count = model.formula_parameter_count(base_filter, k, n)
+    print(f"Total parameters by formula: {param_count:,}")
     
     print(f"\nFormula for computation count:")
-    print(f"Layer 1: m * 3 * k * k * input_size * input_size = {m * 3 * k * k * input_size * input_size}")
-    print(f"Layers 2-5: Sum of m * m * k * k * (input_size/(2^i)) * (input_size/(2^i)) = {m * m * k * k * (input_size/(2^i)) * (input_size/(2^i))}")
-    print(f"Dense layer: flattened_size * n = {flattened_size * n}")
-    print(f"Output layer: n * num_classes = {n * 10}")
+    comp_count = model.formula_computation_count(base_filter, k, n)
+    print(f"Total computations by formula: {comp_count:,}")

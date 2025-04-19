@@ -22,7 +22,8 @@ print(f"Using device: {DEVICE}")
 
 # Modified main function to run all experiments and compare them
 def main():
-    wandb.login(key="e030007b097df00d9a751748294abc8440f932b1")
+    key = ""      # Add your WandB API key here
+    wandb.login(key=key)
     
     """Run all fine-tuning experiments and compare results."""
     # Get class names
